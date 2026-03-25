@@ -47,7 +47,7 @@ public class OrderTask {
     /**
      * 处理一直出于派送中状态的订单
      */
-    @Scheduled(cron = "")//每天凌晨一点触发一次
+    @Scheduled(cron = "0 0 1 * * ?")//每天凌晨一点触发一次
     //@Scheduled(cron = "0/5 * * * * ?")//测试用
     public void proccessDeliveryOrder(){
         log.info("定时处理出于派送中的订单：｛｝",LocalDateTime.now());
