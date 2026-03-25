@@ -41,10 +41,10 @@ public interface ShoppingCartMapper {
     void deleteByUserId(Long userId);
 
     /*
-    * 根据用户id查询购物车数据
+    *  根据id删除购物车数据
      */
     @Delete("delete from shopping_cart where id = #{id}")
-    void deleteById(Long userId);
+    void deleteById(Long id);
 
     /**
      * 批量插入购物车数据
