@@ -8,8 +8,8 @@ sky:
     password: 1375366174
   alioss:
     endpoint: oss-cn-beijing.aliyuncs.com
-    access-key-id: LTAI5tH3NoYPtFM6bpVfcPmL
-    access-key-secret: 3MHvpAgp06CWUqdvPCm18Mz9PbMvTe
+    access-key-id: ${aliyun.oss.accessKeyId}
+    access-key-secret: ${aliyun.oss.accessKeySecret}
     bucket-name: sky-take-out-itcast1375
 
   redis:
