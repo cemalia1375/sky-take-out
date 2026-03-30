@@ -54,3 +54,31 @@ sky:
   wechat:
     appid: ${sky.wechat.appid}
     secret: ${sky.wechat.secret}
+
+langchain4j:
+    dashscope:
+      chat-model:
+        api-key: ${sky.langchain4j.api-key}
+        model-name: qwen-plus
+      streaming-chat-model:
+        api-key: ${sky.langchain4j.api-key}
+        model-name: qwen-plus
+      embedding-model:
+        api-key: ${sky.langchain4j.api-key}
+        model-name: text-embedding-v3
+springdoc:
+  api-docs:
+    enabled: true
+    path: /v3/api-docs
+  swagger-ui:
+    enabled: true
+    path: /swagger-ui.html
+    try-it-out-enabled: true
+  default-consumes-media-type: application/json
+  default-produces-media-type: application/json
+  packages-to-scan: com.sky.controller
+knife4j:
+  enable: true
+  production: false
+  basic:
+    enable: false

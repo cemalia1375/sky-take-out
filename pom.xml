@@ -122,6 +122,13 @@
                 <artifactId>wechatpay-apache-httpclient</artifactId>
                 <version>0.4.8</version>
             </dependency>
+
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-dashscope-spring-boot-starter</artifactId>
+                <version>0.35.0</version>
+            </dependency>
+
         </dependencies>
     </dependencyManagement>
 </project>
