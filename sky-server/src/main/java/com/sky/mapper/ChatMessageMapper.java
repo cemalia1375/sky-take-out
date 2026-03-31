@@ -32,4 +32,13 @@ public interface ChatMessageMapper {
             "where session_id = #{sessionId} " +
             "order by create_time desc limit #{limit}")
     List<ChatMessage> getLatestMessages(@Param("sessionId")Long sessionId, @Param("limit")int i);
+
+    /**
+     * 根据会话ID获取所有消息，按时间正序排列
+     * @param sessionId
+     * @return
+     */
+    @Select("select id, session_id as sessionId, role, content, create_time as createTime " +
+            "from chat_messages where session_id = #{sessionId} order by create_time asc")
+    List<ChatMessage> getBySessionIdOrderByTime(Long sessionId);
 }

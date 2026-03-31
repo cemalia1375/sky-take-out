@@ -1,5 +1,7 @@
 package com.sky.service;
 
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
 /**
  * AI 大模型调用服务接口
  */
@@ -11,4 +13,7 @@ public interface AiService {
      * @return AI的回复内容
      */
     String getReply(Long sessionId, String userMessage);
+
+    // 新增：流式获取回复的方法声明
+    void streamGetReply(Long sessionId, String userMessage, SseEmitter emitter);
 }

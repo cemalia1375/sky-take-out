@@ -19,6 +19,14 @@ public interface ChatSessionMapper {
     void insert(ChatSession chatSession);
 
     /**
+     * 更新memory_id
+     * @param id
+     * @param memoryId
+     */
+    @Update("update chat_sessions set memory_id = #{memoryId} where id = #{id}")
+    void updateMemoryId(@Param("id") Long id, @Param("memoryId") Long memoryId);
+
+    /**
      * 根据管理员ID查询会话列表
      * @param adminId
      * @return
@@ -45,4 +53,12 @@ public interface ChatSessionMapper {
     @Update("update chat_sessions set last_message = #{lastMessage}, update_time = #{updateTime} " +
             "where id = #{id}")
     void update(ChatSession session);
+
+    /**
+     * 根据memory_id 查询
+     * @param memoryId
+     * @return
+     */
+    @Select("select * from chat_sessions where memory_id = #{memoryId}")
+    ChatSession getByMemoryId(@Param("memoryId") Long memoryId);
 }

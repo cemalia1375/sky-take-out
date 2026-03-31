@@ -2,11 +2,14 @@ package com.sky.vo;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.Builder;
 import lombok.Data;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Data
+@Builder
 public class ChatSessionVO {
     @JsonProperty("sessionId")
     private Long id;
@@ -19,4 +22,6 @@ public class ChatSessionVO {
     private LocalDateTime createTime;
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime updateTime;
+    // 包含该会话下的所有消息记录
+    private List<ChatMessageVO> messages;
 }

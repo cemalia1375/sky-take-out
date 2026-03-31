@@ -4,6 +4,7 @@ import com.sky.dto.ChatDTO;
 import com.sky.vo.ChatSessionCreateVO;
 import com.sky.vo.ChatSessionVO;
 import com.sky.vo.ChatVO;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 
@@ -27,5 +28,14 @@ public interface ChatSessionService {
      * @param chatDTO
      * @return
      */
-    ChatVO send(ChatDTO chatDTO);
+    SseEmitter send(ChatDTO chatDTO);
+
+    /**
+     * 获取会话历史
+     * @param sessionId
+     * @return
+     */
+    ChatSessionVO getHistoryBySessionId(Long sessionId);
+
+
 }
