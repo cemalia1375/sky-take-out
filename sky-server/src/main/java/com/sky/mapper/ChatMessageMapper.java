@@ -1,10 +1,7 @@
 package com.sky.mapper;
 
 import com.sky.entity.ChatMessage;
-import org.apache.ibatis.annotations.Insert;
-import org.apache.ibatis.annotations.Mapper;
-import org.apache.ibatis.annotations.Param;
-import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.*;
 
 import java.util.List;
 
@@ -41,4 +38,11 @@ public interface ChatMessageMapper {
     @Select("select id, session_id as sessionId, role, content, create_time as createTime " +
             "from chat_messages where session_id = #{sessionId} order by create_time asc")
     List<ChatMessage> getBySessionIdOrderByTime(Long sessionId);
+
+    /**
+     * 根据id删除聊天记录
+     * @param realId
+     */
+    @Delete("delete from chat_messages where session_id = #{sessionId}")
+    void deleteBySessionId(Long realId);
 }

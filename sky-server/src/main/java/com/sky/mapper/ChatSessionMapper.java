@@ -61,4 +61,11 @@ public interface ChatSessionMapper {
      */
     @Select("select * from chat_sessions where memory_id = #{memoryId}")
     ChatSession getByMemoryId(@Param("memoryId") Long memoryId);
+
+    /**
+     * 根据id删除聊天会话
+     * @param realId
+     */
+    @Delete("delete from chat_sessions where id = #{id}")
+    void deleteById(Long realId);
 }

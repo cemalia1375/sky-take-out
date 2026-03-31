@@ -37,5 +37,9 @@ public interface ChatSessionService {
      */
     ChatSessionVO getHistoryBySessionId(Long sessionId);
 
-
+    /**
+     * 删除会话记录
+     * @param sessionId
+     */
+    void deleteSession(Long sessionId);
 }

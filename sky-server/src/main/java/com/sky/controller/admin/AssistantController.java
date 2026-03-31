@@ -117,5 +117,16 @@ public class AssistantController {
         }
     }
 
-
+    /**
+     * 删除会话记录
+     * @param sessionId
+     * @return
+     */
+    @DeleteMapping("/sessions/{sessionId}")
+    @ApiOperation("删除会话")
+    public Result deleteSession(@PathVariable Long sessionId) {
+        log.info("删除会话，sessionId={}", sessionId);
+        chatSessionService.deleteSession(sessionId);
+        return Result.success();
+    }
 }

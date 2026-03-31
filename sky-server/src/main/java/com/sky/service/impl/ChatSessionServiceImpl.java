@@ -186,5 +186,34 @@ public class ChatSessionServiceImpl implements ChatSessionService {
                 .build();
     }
 
+    /**
+     * 删除会话记录
+     * @param sessionId
+     */
+    @Override
+    @Transactional
+    public void deleteSession(Long sessionId) {
+        log.info("开始删除会话: {}", sessionId);
+
+        // 1. 查会话（兼容 memoryId）
+        ChatSession session = chatSessionMapper.getById(sessionId);
+        if (session == null) {
+            session = chatSessionMapper.getByMemoryId(sessionId);
+        }
+
+        if (session == null) {
+            throw new BaseException("会话不存在");
+        }
+
+        Long realId = session.getId();
+
+        // 2. 删除聊天记录
+        chatMessageMapper.deleteBySessionId(realId);
+
+        // 3. 删除会话
+        chatSessionMapper.deleteById(realId);
+
+        log.info("删除成功 sessionId={}", realId);
+    }
 }
 
