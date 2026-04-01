@@ -5,21 +5,24 @@ import com.alibaba.dashscope.aigc.generation.GenerationParam;
 import com.alibaba.dashscope.aigc.generation.GenerationResult;
 import com.alibaba.dashscope.common.Message;
 import com.alibaba.dashscope.common.Role;
+import com.sky.context.BaseContext;
 import com.sky.entity.ChatMessage;
+import com.sky.entity.Orders;
 import com.sky.mapper.ChatMessageMapper;
 import com.sky.properties.DashScopeProperties;
 import com.sky.service.AiService;
+import com.sky.service.OrderQueryService;
 import io.reactivex.Flowable;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import com.alibaba.fastjson.JSON;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
 @Slf4j
@@ -29,6 +32,52 @@ public class AiServiceImpl implements AiService {
     private DashScopeProperties properties;
     @Autowired
     private ChatMessageMapper chatMessageMapper;
+    @Autowired
+    private OrderQueryService orderQueryService;
+
+    // 判断是否订单查询
+    private boolean isOrderQuery(String msg) {
+        return msg.contains("订单");
+    }
+
+    // 提取订单号（数字）
+    private String extractOrderNumber(String msg) {
+        return msg.replaceAll("[^0-9]", "");
+    }
+
+    // 状态转中文
+    private String getStatusText(Integer status) {
+        switch (status) {
+            case 1: return "待付款";
+            case 2: return "待接单";
+            case 3: return "已接单";
+            case 4: return "派送中";
+            case 5: return "已完成";
+            case 6: return "已取消";
+            default: return "未知状态";
+        }
+    }
+
+    private List<Map<String, Object>> formatOrders(List<Orders> list) {
+        return list.stream().map(o -> {
+            Map<String, Object> map = new HashMap<>();
+            map.put("订单号", o.getNumber());
+            map.put("状态", getStatusText(o.getStatus()));
+            map.put("金额", o.getAmount());
+            map.put("下单时间", o.getOrderTime().toString());
+            return map;
+        }).collect(Collectors.toList());
+    }
+
+    private Map<String, Object> formatOrder(Orders o) {
+        Map<String, Object> map = new HashMap<>();
+        map.put("订单号", o.getNumber());
+        map.put("状态", getStatusText(o.getStatus()));
+        map.put("金额", o.getAmount());
+        map.put("收货人", o.getConsignee());
+        map.put("地址", o.getAddress());
+        return map;
+    }
 
     @Override
     public String getReply(Long sessionId, String userMessage) {
@@ -84,6 +133,78 @@ public class AiServiceImpl implements AiService {
         log.info("进入 streamGetReply, 接收到的 sessionId 为: {}", sessionId);
 
         try {
+            if (isOrderQuery(userMessage)) {
+                Long userId = BaseContext.getCurrentId();
+
+                try {
+                    String msg = userMessage;
+
+                    // 1️⃣ 未完成订单
+                    if (msg.contains("未完成") || msg.contains("进行中") || msg.contains("没完成")) {
+                        List<Orders> list = orderQueryService.getUnfinishedOrders(userId);
+
+                        List<Map<String, Object>> resultList = formatOrders(list);
+
+                        // ⭐直接返回对象（关键）
+                        emitter.send(resultList);
+
+                        // 保存数据库（这里才转JSON字符串）
+                        saveAiMessage(sessionId, JSON.toJSONString(resultList));
+
+                        emitter.send("[DONE]");
+                        emitter.complete();
+                        return;
+                    }
+
+                    // 2️⃣ 查询订单号
+                    String number = extractOrderNumber(msg);
+                    if (!number.isEmpty()) {
+                        Orders order = orderQueryService.getByNumber(number);
+
+                        Map<String, Object> resultMap;
+
+                        if (order != null) {
+                            resultMap = formatOrder(order);
+                        } else {
+                            resultMap = new HashMap<>();
+                            resultMap.put("message", "未找到该订单");
+                        }
+
+                        // ⭐直接返回对象（关键）
+                        emitter.send(resultMap);
+
+                        saveAiMessage(sessionId, JSON.toJSONString(resultMap));
+
+                        emitter.send("[DONE]");
+                        emitter.complete();
+                        return;
+                    }
+
+                    // 3️⃣ 最近订单
+                    List<Orders> list = orderQueryService.getRecentOrders(userId);
+
+                    List<Map<String, Object>> resultList = formatOrders(list);
+
+                    // ⭐直接返回对象（关键）
+                    emitter.send(resultList);
+
+                    saveAiMessage(sessionId, JSON.toJSONString(resultList));
+
+                    emitter.send("[DONE]");
+                    emitter.complete();
+                    return;
+
+                } catch (Exception e) {
+                    try {
+                        emitter.send("订单查询失败：" + e.getMessage());
+                    } catch (IOException ex) {
+                        log.error("发送失败", ex);
+                    }
+                    emitter.completeWithError(e);
+                    return;
+                }
+            }
+
             Generation gen = new Generation();
             List<Message> msgList = new ArrayList<>();
 

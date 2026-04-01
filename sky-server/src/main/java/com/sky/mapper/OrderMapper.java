@@ -86,4 +86,31 @@ public interface OrderMapper {
      * @return
      */
     List<GoodsSalesDTO> getSalesTop10(LocalDateTime beginTime, LocalDateTime endTime);
+
+    /**
+     * 小助手查询最近订单
+     * @param userId
+     * @return
+     */
+    @Select("select * from orders where user_id = #{userId} order by order_time desc limit 5")
+    List<Orders> getRecentOrders(Long userId);
+
+    /**
+     * 小助手查询未完成订单
+     * @param userId
+     * @return
+     */
+    @Select("select * from orders where user_id = #{userId} and status in (1,2,3,4)")
+    List<Orders> getUnfinishedOrders(Long userId);
+
+    /**
+     * 查询地址
+     * @param number
+     * @return
+     */
+    @Select("SELECT o.*, a.consignee, a.phone, a.detail " +
+            "FROM orders o " +
+            "LEFT JOIN address_book a ON o.address_book_id = a.id " +
+            "WHERE o.number = #{number}")
+    Map<String, Object> getOrderWithAddress(String number);
 }
