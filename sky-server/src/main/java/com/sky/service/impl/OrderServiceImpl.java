@@ -24,16 +24,14 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.OrderedBidiMap;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
@@ -67,6 +65,9 @@ public class OrderServiceImpl implements OrderService {
     @Autowired
     private UserCouponMapper userCouponMapper;
 
+    @Autowired
+    private RedisTemplate<String, Object> redisTemplate;
+
     /**
      * 用户下单
      * @param ordersSubmitDTO
@@ -77,103 +78,124 @@ public class OrderServiceImpl implements OrderService {
 
         //1. 处理各种业务异常
         //地址薄为空
-//        AddressBook addressBook = addressBookMapper.getById(ordersSubmitDTO.getAddressBookId());
-//        if(addressBook == null){
-//            //抛出业务异常
-//            throw new AddressBookBusinessException(MessageConstant.ADDRESS_BOOK_IS_NULL);
-//        }
+        /*
+        AddressBook addressBook = addressBookMapper.getById(ordersSubmitDTO.getAddressBookId());
+        if(addressBook == null){
+            //抛出业务异常
+            throw new AddressBookBusinessException(MessageConstant.ADDRESS_BOOK_IS_NULL);
+        }*/
+
         //优化地址为空的业务处理逻辑
         Long userId = BaseContext.getCurrentId();
+        // ================= Redis防重复下单 =================
+        String key = "order:submit:" + userId;
+        String value = UUID.randomUUID().toString();
+        // 尝试加锁（5秒过期）
+        Boolean success = redisTemplate.opsForValue()
+                .setIfAbsent(key, "1", 5, java.util.concurrent.TimeUnit.SECONDS);
 
-        AddressBook addressBook;
-
-        //  1. 没传地址ID → 用默认地址
-        if (ordersSubmitDTO.getAddressBookId() == null) {
-
-            AddressBook query = new AddressBook();
-            query.setUserId(userId);
-            query.setIsDefault(1);
-
-            List<AddressBook> list = addressBookMapper.list(query);
-
-            addressBook = list.isEmpty() ? null : list.get(0);
-
-        } else {
-            //  2. 传了就按ID查
-            addressBook = addressBookMapper.getById(ordersSubmitDTO.getAddressBookId());
+        if (Boolean.FALSE.equals(success)) {
+            throw new OrderBusinessException("请勿重复提交订单");
         }
 
-        //  3. 最终兜底校验
-        if (addressBook == null) {
-            throw new AddressBookBusinessException("用户地址为空，不能下单");
+        try{
+            AddressBook addressBook;
+
+            //  1. 没传地址ID → 用默认地址
+            if (ordersSubmitDTO.getAddressBookId() == null) {
+
+                AddressBook query = new AddressBook();
+                query.setUserId(userId);
+                query.setIsDefault(1);
+
+                List<AddressBook> list = addressBookMapper.list(query);
+
+                addressBook = list.isEmpty() ? null : list.get(0);
+
+            } else {
+                //  2. 传了就按ID查
+                addressBook = addressBookMapper.getById(ordersSubmitDTO.getAddressBookId());
+            }
+
+            //  3. 最终兜底校验
+            if (addressBook == null) {
+                throw new AddressBookBusinessException("用户地址为空，不能下单");
+            }
+
+            //购物车为空
+            //查询当前用户的购物车数据
+            ShoppingCart shoppingCart = new ShoppingCart();
+            shoppingCart.setUserId(userId);
+            List<ShoppingCart> shoppingCartList = shoppingCartMapper.list(shoppingCart);
+
+            if(shoppingCartList == null || shoppingCartList.size() == 0){
+                //抛出业务异常
+                throw new AddressBookBusinessException(MessageConstant.SHOPPING_CART_IS_NULL);
+            }
+
+
+            //2. 向订单表插入1条数据
+            Orders orders = new Orders();
+            BeanUtils.copyProperties(ordersSubmitDTO,orders);
+            orders.setOrderTime(LocalDateTime.now());
+            orders.setPayStatus(Orders.UN_PAID);
+            orders.setStatus(Orders.PENDING_PAYMENT);
+            orders.setNumber(String.valueOf(System.currentTimeMillis()));
+            orders.setPhone(addressBook.getPhone());
+            orders.setConsignee(addressBook.getConsignee());//收货人
+            orders.setUserId(userId);
+
+            // 原金额
+            BigDecimal originalAmount = orders.getAmount();
+
+            // 自动选最优优惠券
+            Map<String, Object> bestCoupon = couponService.selectBestCoupon(originalAmount);
+
+            if (bestCoupon != null) {
+                BigDecimal discount = (BigDecimal) bestCoupon.get("discount");
+
+                // 修改订单金额
+                orders.setAmount(originalAmount.subtract(discount));
+
+                // 标记优惠券已使用
+                Long ucId = ((Number) bestCoupon.get("ucId")).longValue();
+                userCouponMapper.markUsed(ucId);
+            }
+
+            orderMapper.insert(orders);
+
+            List<OrderDetail> orderDetailList = new ArrayList<>();
+            //3. 向订单表插入n条数据
+            for (ShoppingCart cart : shoppingCartList) {
+                OrderDetail orderDetail = new OrderDetail();//订单明细
+                BeanUtils.copyProperties(cart,orderDetail);
+                orderDetail.setOrderId(orders.getId());//设置当前订单明细关联的订单id
+                orderDetailList.add(orderDetail);
+            }
+
+            orderDetailMapper.insertBatch(orderDetailList);
+
+            //4. 清空当前用户的购物车数据
+            shoppingCartMapper.deleteByUserId(userId);
+
+            //5. 封装VO返回结果
+            OrderSubmitVO orderSubmitVO = OrderSubmitVO.builder()
+                    .id(orders.getId())
+                    .orderNumber(orders.getNumber())
+                    .orderAmount(orders.getAmount())
+                    .orderTime(orders.getOrderTime())
+                    .build();
+
+            return orderSubmitVO;
+        }finally {
+            // 释放锁，只释放自己的
+            String currentValue = (String) redisTemplate.opsForValue().get(key);
+
+            if (value.equals(currentValue)) {
+                redisTemplate.delete(key);
+            }
         }
 
-        //购物车为空
-        //查询当前用户的购物车数据
-        Long userId = BaseContext.getCurrentId();
-        ShoppingCart shoppingCart = new ShoppingCart();
-        shoppingCart.setUserId(userId);
-        List<ShoppingCart> shoppingCartList = shoppingCartMapper.list(shoppingCart);
-
-        if(shoppingCartList == null || shoppingCartList.size() == 0){
-            //抛出业务异常
-            throw new AddressBookBusinessException(MessageConstant.SHOPPING_CART_IS_NULL);
-        }
-
-
-        //2. 向订单表插入1条数据
-        Orders orders = new Orders();
-        BeanUtils.copyProperties(ordersSubmitDTO,orders);
-        orders.setOrderTime(LocalDateTime.now());
-        orders.setPayStatus(Orders.UN_PAID);
-        orders.setStatus(Orders.PENDING_PAYMENT);
-        orders.setNumber(String.valueOf(System.currentTimeMillis()));
-        orders.setPhone(addressBook.getPhone());
-        orders.setConsignee(addressBook.getConsignee());//收货人
-        orders.setUserId(userId);
-
-        // 原金额
-        BigDecimal originalAmount = orders.getAmount();
-
-// 自动选最优优惠券
-        Map<String, Object> bestCoupon = couponService.selectBestCoupon(originalAmount);
-
-        if (bestCoupon != null) {
-            BigDecimal discount = (BigDecimal) bestCoupon.get("discount");
-
-            // 修改订单金额
-            orders.setAmount(originalAmount.subtract(discount));
-
-            // 标记优惠券已使用
-            Long ucId = ((Number) bestCoupon.get("ucId")).longValue();
-            userCouponMapper.markUsed(ucId);
-        }
-
-        orderMapper.insert(orders);
-
-        List<OrderDetail> orderDetailList = new ArrayList<>();
-        //3. 向订单表插入n条数据
-        for (ShoppingCart cart : shoppingCartList) {
-            OrderDetail orderDetail = new OrderDetail();//订单明细
-            BeanUtils.copyProperties(cart,orderDetail);
-            orderDetail.setOrderId(orders.getId());//设置当前订单明细关联的订单id
-            orderDetailList.add(orderDetail);
-        }
-
-        orderDetailMapper.insertBatch(orderDetailList);
-
-        //4. 清空当前用户的购物车数据
-        shoppingCartMapper.deleteByUserId(userId);
-
-        //5. 封装VO返回结果
-        OrderSubmitVO orderSubmitVO = OrderSubmitVO.builder()
-                .id(orders.getId())
-                .orderNumber(orders.getNumber())
-                .orderAmount(orders.getAmount())
-                .orderTime(orders.getOrderTime())
-                .build();
-
-        return orderSubmitVO;
     }
 
     /**
