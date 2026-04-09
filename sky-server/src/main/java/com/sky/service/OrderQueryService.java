@@ -3,6 +3,7 @@ package com.sky.service;
 import com.sky.entity.Orders;
 
 import java.util.List;
+import java.util.Map;
 
 public interface OrderQueryService {
     // 最近订单
@@ -13,4 +14,7 @@ public interface OrderQueryService {
 
     // 根据订单号查询
     Orders getByNumber(String number);
+
+    // 查询地址
+    Map<String, Object> getOrderWithAddress(String number);
 }

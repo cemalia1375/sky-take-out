@@ -108,9 +108,6 @@ public interface OrderMapper {
      * @param number
      * @return
      */
-    @Select("SELECT o.*, a.consignee, a.phone, a.detail " +
-            "FROM orders o " +
-            "LEFT JOIN address_book a ON o.address_book_id = a.id " +
-            "WHERE o.number = #{number}")
+    
     Map<String, Object> getOrderWithAddress(String number);
 }

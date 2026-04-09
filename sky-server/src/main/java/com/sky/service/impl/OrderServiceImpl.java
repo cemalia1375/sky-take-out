@@ -12,6 +12,7 @@ import com.sky.exception.AddressBookBusinessException;
 import com.sky.exception.OrderBusinessException;
 import com.sky.mapper.*;
 import com.sky.result.PageResult;
+import com.sky.service.CouponService;
 import com.sky.service.OrderService;
 import com.sky.utils.WeChatPayUtil;
 import com.sky.vo.OrderPaymentVO;
@@ -60,6 +61,12 @@ public class OrderServiceImpl implements OrderService {
     @Autowired
     private WebSocketServer webSocketServer;
 
+    @Autowired
+    private CouponService couponService;
+
+    @Autowired
+    private UserCouponMapper userCouponMapper;
+
     /**
      * 用户下单
      * @param ordersSubmitDTO
@@ -70,10 +77,35 @@ public class OrderServiceImpl implements OrderService {
 
         //1. 处理各种业务异常
         //地址薄为空
-        AddressBook addressBook = addressBookMapper.getById(ordersSubmitDTO.getAddressBookId());
-        if(addressBook == null){
-            //抛出业务异常
-            throw new AddressBookBusinessException(MessageConstant.ADDRESS_BOOK_IS_NULL);
+//        AddressBook addressBook = addressBookMapper.getById(ordersSubmitDTO.getAddressBookId());
+//        if(addressBook == null){
+//            //抛出业务异常
+//            throw new AddressBookBusinessException(MessageConstant.ADDRESS_BOOK_IS_NULL);
+//        }
+        //优化地址为空的业务处理逻辑
+        Long userId = BaseContext.getCurrentId();
+
+        AddressBook addressBook;
+
+        //  1. 没传地址ID → 用默认地址
+        if (ordersSubmitDTO.getAddressBookId() == null) {
+
+            AddressBook query = new AddressBook();
+            query.setUserId(userId);
+            query.setIsDefault(1);
+
+            List<AddressBook> list = addressBookMapper.list(query);
+
+            addressBook = list.isEmpty() ? null : list.get(0);
+
+        } else {
+            //  2. 传了就按ID查
+            addressBook = addressBookMapper.getById(ordersSubmitDTO.getAddressBookId());
+        }
+
+        //  3. 最终兜底校验
+        if (addressBook == null) {
+            throw new AddressBookBusinessException("用户地址为空，不能下单");
         }
 
         //购物车为空
@@ -99,6 +131,23 @@ public class OrderServiceImpl implements OrderService {
         orders.setPhone(addressBook.getPhone());
         orders.setConsignee(addressBook.getConsignee());//收货人
         orders.setUserId(userId);
+
+        // 原金额
+        BigDecimal originalAmount = orders.getAmount();
+
+// 自动选最优优惠券
+        Map<String, Object> bestCoupon = couponService.selectBestCoupon(originalAmount);
+
+        if (bestCoupon != null) {
+            BigDecimal discount = (BigDecimal) bestCoupon.get("discount");
+
+            // 修改订单金额
+            orders.setAmount(originalAmount.subtract(discount));
+
+            // 标记优惠券已使用
+            Long ucId = ((Number) bestCoupon.get("ucId")).longValue();
+            userCouponMapper.markUsed(ucId);
+        }
 
         orderMapper.insert(orders);
 

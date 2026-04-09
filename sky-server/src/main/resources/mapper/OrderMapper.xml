@@ -112,4 +112,16 @@
         order by number desc
         limit 0,10
     </select>
+    <select id="getOrderWithAddress" resultType="java.util.Map">
+        SELECT
+            o.number,
+            o.amount,
+            o.status,
+            ab.consignee,
+            ab.phone,
+            CONCAT(ab.province_name, ab.city_name, ab.district_name, ab.detail) AS full_address
+        FROM orders o
+                 LEFT JOIN address_book ab ON o.address_book_id = ab.id
+        WHERE o.number = #{number}
+    </select>
 </mapper>

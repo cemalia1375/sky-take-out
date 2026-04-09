@@ -31,6 +31,7 @@ public class OrderQueryServiceImpl implements OrderQueryService {
         return orderMapper.getByNumber(number);
     }
 
+    @Override
     public Map<String, Object> getOrderWithAddress(String number) {
         return orderMapper.getOrderWithAddress(number);
     }
