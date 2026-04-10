@@ -32,4 +32,18 @@ public class LuaScriptConfiguration{
         //1:扣减成功
         //2:库存不足
         //3:没库存key
+
+    //用于回滚（增加库存）的Bean
+    @Bean
+    public DefaultRedisScript<Long> batchRollbackLuaScript() {
+        DefaultRedisScript<Long> script = new DefaultRedisScript<>();
+        script.setScriptText(
+                "for i=1,#KEYS do " +
+                        "   redis.call('incrby', KEYS[i], ARGV[i]) " +
+                        "end " +
+                        "return 1"
+        );
+        script.setResultType(Long.class);
+        return script;
+    }
 }
