@@ -32,6 +32,7 @@ import org.springframework.util.CollectionUtils;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @Service
@@ -152,14 +153,37 @@ public class OrderServiceImpl implements OrderService {
             Map<String, Object> bestCoupon = couponService.selectBestCoupon(originalAmount);
 
             if (bestCoupon != null) {
-                BigDecimal discount = (BigDecimal) bestCoupon.get("discount");
 
-                // 修改订单金额
-                orders.setAmount(originalAmount.subtract(discount));
-
-                // 标记优惠券已使用
                 Long ucId = ((Number) bestCoupon.get("ucId")).longValue();
-                userCouponMapper.markUsed(ucId);
+
+                // ================= Redis优惠券锁 =================
+                String couponLockKey = "coupon:lock:" + ucId;
+                String lockValue = UUID.randomUUID().toString();
+
+                Boolean lockSuccess = redisTemplate.opsForValue()
+                        .setIfAbsent(couponLockKey, lockValue, 5, TimeUnit.SECONDS);
+
+                if (Boolean.TRUE.equals(lockSuccess)) {
+                    try {
+                        // 再次尝试更新（数据库CAS）
+                        int rows = userCouponMapper.markUsed(ucId);
+
+                        if (rows == 1) {
+                            // ✅ 成功使用优惠券
+                            BigDecimal discount = (BigDecimal) bestCoupon.get("discount");
+                            orders.setAmount(originalAmount.subtract(discount));
+                        }
+                        // ❗ rows=0说明券被抢了 → 自动放弃
+
+                    } finally {
+                        // 🔥 只删除自己的锁（防误删）
+                        String currentValue = (String) redisTemplate.opsForValue().get(couponLockKey);
+                        if (lockValue.equals(currentValue)) {
+                            redisTemplate.delete(couponLockKey);
+                        }
+                    }
+                }
+                // ❗ 加锁失败 → 说明别人正在用 → 自动放弃该券
             }
 
             orderMapper.insert(orders);

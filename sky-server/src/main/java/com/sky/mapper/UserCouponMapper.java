@@ -22,6 +22,7 @@ public interface UserCouponMapper {
             "WHERE uc.user_id = #{userId} AND uc.status = 0")
     List<Map<String, Object>> getUserCoupons(Long userId);
 
-    @Update("update user_coupon set status = 1, use_time = now() where id = #{id}")
-    void markUsed(Long id);
+    @Update("update user_coupon set status = 1, use_time = now() " +
+            "where id = #{id} and status = 0")
+    int markUsed(Long id);
 }
