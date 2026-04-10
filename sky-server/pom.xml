@@ -164,6 +164,12 @@
             <version>0.35.0</version>
         </dependency>
 
+        <dependency>
+            <groupId>org.redisson</groupId>
+            <artifactId>redisson</artifactId>
+            <version>3.23.1</version>
+        </dependency>
+
     </dependencies>
 
     <build>

@@ -23,6 +23,9 @@ import com.sky.websocket.WebSocketServer;
 import dev.langchain4j.service.V;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.OrderedBidiMap;
+import org.redisson.api.RBlockingQueue;
+import org.redisson.api.RDelayedQueue;
+import org.redisson.api.RedissonClient;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -80,6 +83,9 @@ public class OrderServiceImpl implements OrderService {
 
     @Autowired
     private DefaultRedisScript<Long> batchRollbackLuaScript; // 注入回滚脚本
+
+    @Autowired
+    private RedissonClient redissonClient; // 注入Redisson客户端
 
     /**
      * 用户下单
@@ -160,6 +166,15 @@ public class OrderServiceImpl implements OrderService {
 
             // 5.3 清空购物车
             shoppingCartMapper.deleteByUserId(userId);
+
+            // ================= 新增：发送延迟取消消息 =================
+            // 15分钟后超时 (900秒)
+            RBlockingQueue<Long> blockingQueue = redissonClient.getBlockingQueue("orderDelayQueue");
+            RDelayedQueue<Long> delayedQueue = redissonClient.getDelayedQueue(blockingQueue);
+           delayedQueue.offer(orders.getId(), 15, TimeUnit.MINUTES);
+            //delayedQueue.offer(orders.getId(), 60, TimeUnit.SECONDS);
+            log.info("订单 {} 已加入延迟队列，15分钟后检查支付状态", orders.getId());
+            // =======================================================
 
             // 6. 返回结果
             return OrderSubmitVO.builder()
@@ -662,5 +677,34 @@ public class OrderServiceImpl implements OrderService {
 
         //通过websocket向客户端浏览器推送消息
         webSocketServer.sendToAllClient(JSON.toJSONString(map));
+    }
+
+    /**
+     * 核心回滚逻辑：释放Redis库存 + 退回优惠券
+     * @param orderId 订单ID
+     */
+    public void rollbackResources(Long orderId) {
+        // 1. 获取订单明细，准备回滚库存
+        List<OrderDetail> details = orderDetailMapper.getByOrderId(orderId);
+        if (!CollectionUtils.isEmpty(details)) {
+            List<String> keys = new ArrayList<>();
+            List<String> args = new ArrayList<>();
+            for (OrderDetail detail : details) {
+                if (detail.getDishId() != null) {
+                    keys.add("stock:dish:" + detail.getDishId());
+                    args.add(String.valueOf(detail.getNumber()));
+                }
+            }
+            if (!keys.isEmpty()) {
+                log.info("延迟任务触发：开始回滚Redis库存，Keys: {}", keys);
+                stringRedisTemplate.execute(batchRollbackLuaScript, keys, args.toArray(new String[0]));
+            }
+        }
+
+        // 2. 退回优惠券（如果有）
+        Orders ordersDB = orderMapper.getById(orderId);
+        // 这里根据你的业务逻辑判断，通常下单时 markUsed 的优惠券，取消时要重置状态
+        // 假设 userCouponMapper 有一个 resetStatus 方法
+        // userCouponMapper.resetStatusByOrderId(orderId);
     }
 }

@@ -16,6 +16,9 @@ spring:
     host: ${sky.redis.host}
     port: ${sky.redis.port}
     database: ${sky.redis.database}
+  mvc:
+    pathmatch:
+      matching-strategy: ant_path_matcher
 
 mybatis:
   #mapper配置文件
