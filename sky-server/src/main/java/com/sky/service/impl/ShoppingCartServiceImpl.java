@@ -40,6 +40,7 @@ public class ShoppingCartServiceImpl implements ShoppingCartService {
         Long userId = BaseContext.getCurrentId();
         shoppingCart.setUserId(userId);
 
+
         //判断当前加入到购物车中的商品是否已经存在了
         List<ShoppingCart> list = shoppingCartMapper.list(shoppingCart);
 
@@ -71,8 +72,20 @@ public class ShoppingCartServiceImpl implements ShoppingCartService {
             }
             shoppingCart.setNumber(1);
             shoppingCart.setCreateTime(LocalDateTime.now());
-            shoppingCartMapper.insert(shoppingCart);
+            //shoppingCartMapper.insert(shoppingCart);
 
+            //在这里包裹 try-catch 处理唯一索引冲突
+            try {
+                shoppingCartMapper.insert(shoppingCart);
+            } catch (Exception e) {
+                // 如果并发导致重复插入，捕获异常改为执行更新
+                List<ShoppingCart> retryList = shoppingCartMapper.list(shoppingCart);
+                if (retryList != null && !retryList.isEmpty()) {
+                    ShoppingCart cart = retryList.get(0);
+                    //cart.setNumber(cart.getNumber() + 1);
+                    shoppingCartMapper.updateNumberById(cart);
+                }
+            }
         }
     }
 

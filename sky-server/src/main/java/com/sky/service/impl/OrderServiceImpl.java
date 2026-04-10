@@ -20,11 +20,14 @@ import com.sky.vo.OrderStatisticsVO;
 import com.sky.vo.OrderSubmitVO;
 import com.sky.vo.OrderVO;
 import com.sky.websocket.WebSocketServer;
+import dev.langchain4j.service.V;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.OrderedBidiMap;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
@@ -69,6 +72,12 @@ public class OrderServiceImpl implements OrderService {
     @Autowired
     private RedisTemplate<String, Object> redisTemplate;
 
+    @Autowired
+    private DefaultRedisScript<Long> batchStockLuaScript;
+
+    @Autowired
+    private StringRedisTemplate stringRedisTemplate;
+
     /**
      * 用户下单
      * @param ordersSubmitDTO
@@ -79,12 +88,6 @@ public class OrderServiceImpl implements OrderService {
 
         //1. 处理各种业务异常
         //地址薄为空
-        /*
-        AddressBook addressBook = addressBookMapper.getById(ordersSubmitDTO.getAddressBookId());
-        if(addressBook == null){
-            //抛出业务异常
-            throw new AddressBookBusinessException(MessageConstant.ADDRESS_BOOK_IS_NULL);
-        }*/
 
         //优化地址为空的业务处理逻辑
         Long userId = BaseContext.getCurrentId();
@@ -93,7 +96,7 @@ public class OrderServiceImpl implements OrderService {
         String value = UUID.randomUUID().toString();
         // 尝试加锁（5秒过期）
         Boolean success = redisTemplate.opsForValue()
-                .setIfAbsent(key, "1", 5, java.util.concurrent.TimeUnit.SECONDS);
+                .setIfAbsent(key, value, 5, TimeUnit.SECONDS);
 
         if (Boolean.FALSE.equals(success)) {
             throw new OrderBusinessException("请勿重复提交订单");
@@ -132,6 +135,43 @@ public class OrderServiceImpl implements OrderService {
             if(shoppingCartList == null || shoppingCartList.size() == 0){
                 //抛出业务异常
                 throw new AddressBookBusinessException(MessageConstant.SHOPPING_CART_IS_NULL);
+            }
+
+            // ====== 批量扣库存（原子） ======
+            List<String> keys = new ArrayList<>();
+            List<Object> args = new ArrayList<>(); // 改为 Object 列表，确保序列化一致
+
+            for (ShoppingCart cart : shoppingCartList) {
+                // 无论是菜品还是套餐，只要有 ID 就要扣库存（假设你套餐也存了 stock:setmeal:ID）
+                // 如果你只想扣菜品，逻辑如下：
+                if (cart.getDishId() != null) {
+                    keys.add("stock:dish:" + cart.getDishId());
+                    args.add(String.valueOf(cart.getNumber()));
+                } else if (cart.getSetmealId() != null) {
+                    // 如果套餐也有库存管理，取消注释下面两行
+                    // keys.add("stock:setmeal:" + cart.getSetmealId());
+                    // args.add(String.valueOf(cart.getNumber()));
+                }
+            }
+
+            if (!keys.isEmpty()) {
+                log.info("Redis扣库存请求 - Keys: {}, Args: {}", keys, args);
+
+                // 将 args 明确转为 String 数组（Lua 接收 ARGV 必须是 String）
+                String[] argsArray = args.stream().map(Object::toString).toArray(String[]::new);
+
+                // 使用 stringRedisTemplate 替代 redisTemplate
+                Long result = stringRedisTemplate.execute(
+                        batchStockLuaScript,
+                        keys,
+                        argsArray // 传入字符串数组
+                );
+
+                log.info("Redis扣库存结果: {}", result);
+
+                if (result == null || result != 1L) {
+                    throw new OrderBusinessException("库存不足或商品已售罄");
+                }
             }
 
 
@@ -218,6 +258,7 @@ public class OrderServiceImpl implements OrderService {
             if (value.equals(currentValue)) {
                 redisTemplate.delete(key);
             }
+            //log.info("压测中，跳过释放锁逻辑");
         }
 
     }

@@ -12,6 +12,12 @@
         </foreach>
     </insert>
 
+    <update id="updateNumberById">
+            update shopping_cart
+            set number = number + 1
+            where id = #{id}
+    </update>
+
 
     <select id="list" resultType="com.sky.entity.ShoppingCart">
         select * from shopping_cart
@@ -25,9 +31,14 @@
             <if test="setmealId != null">
                 and setmeal_id = #{setmealId}
             </if>
-            <if test="dishFlavor != null">
-                and dish_flavor = #{dishFlavor}
-            </if>
+            <choose>
+                <when test="dishFlavor != null">
+                    and dish_flavor = #{dishFlavor}
+                </when>
+                <otherwise>
+                    and dish_flavor is null
+                </otherwise>
+            </choose>
         </where>
     </select>
 </mapper>
