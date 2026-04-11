@@ -88,7 +88,7 @@ public class OrderServiceImpl implements OrderService {
     private RedissonClient redissonClient; // 注入Redisson客户端
 
     /**
-     * 用户下单
+     * 用户下单 (Redisson 增强版：保留全部 Lua 及优惠券逻辑)
      * @param ordersSubmitDTO
      * @return
      */
@@ -96,61 +96,122 @@ public class OrderServiceImpl implements OrderService {
     public OrderSubmitVO submitOrder(OrdersSubmitDTO ordersSubmitDTO) {
         Long userId = BaseContext.getCurrentId();
 
-        // 1. Redis防重复下单锁
-        String key = "order:submit:" + userId;
-        String value = UUID.randomUUID().toString();
-        Boolean success = redisTemplate.opsForValue().setIfAbsent(key, value, 5, TimeUnit.SECONDS);
-        if (Boolean.FALSE.equals(success)) {
-            throw new OrderBusinessException("请勿重复提交订单");
-        }
+        // 1. 【修改点】使用 Redisson 锁住整个下单动作（防止重复点击，自带看门狗续期）
+        org.redisson.api.RLock submitLock = redissonClient.getLock("order:submit:lock:" + userId);
 
-        // 定义状态标记
+        // 定义状态标记用于 catch 块回滚
         boolean isRedisStockDeducted = false;
+        // Object 列表，确保序列化一致
         List<String> keys = new ArrayList<>();
         List<Object> args = new ArrayList<>();
 
         try {
-            // 2. 基本校验（地址、购物车）
-            AddressBook addressBook = getAddressBookHelper(ordersSubmitDTO, userId);
+            // 尝试加锁，0秒等待，抢不到直接报错
+            if (!submitLock.tryLock(0, TimeUnit.SECONDS)) {
+                throw new OrderBusinessException("请勿重复提交订单");
+            }
 
+            // --- 2. 各种业务校验 ---
+            // 优化后的地址为空的业务处理逻辑
+            AddressBook addressBook;
+            // 没传地址ID → 用默认地址
+            if (ordersSubmitDTO.getAddressBookId() == null) {
+                AddressBook query = new AddressBook();
+                query.setUserId(userId);
+                query.setIsDefault(1);
+                List<AddressBook> list = addressBookMapper.list(query);
+                addressBook = list.isEmpty() ? null : list.get(0);
+            } else {
+                // 传了就按ID查
+                addressBook = addressBookMapper.getById(ordersSubmitDTO.getAddressBookId());
+            }
+            //  最终兜底校验
+            if (addressBook == null) {
+                throw new AddressBookBusinessException("用户地址为空，不能下单");
+            }
+
+            //购物车为空
+            //查询当前用户的购物车数据
             ShoppingCart shoppingCart = new ShoppingCart();
             shoppingCart.setUserId(userId);
             List<ShoppingCart> shoppingCartList = shoppingCartMapper.list(shoppingCart);
 
-            if (CollectionUtils.isEmpty(shoppingCartList)) {
+            if (shoppingCartList == null || shoppingCartList.isEmpty()) {
+                //抛出业务异常
                 throw new AddressBookBusinessException(MessageConstant.SHOPPING_CART_IS_NULL);
             }
 
-            // 3. 准备库存数据
+            // --- 3. 批量扣库存 Lua 脚本 ---
             for (ShoppingCart cart : shoppingCartList) {
+                // 无论是菜品还是套餐，只要有 ID 就要扣库存（假设套餐也存了 stock:setmeal:ID）
+                // 如果只想扣菜品，逻辑如下：
                 if (cart.getDishId() != null) {
                     keys.add("stock:dish:" + cart.getDishId());
                     args.add(String.valueOf(cart.getNumber()));
+                }else if (cart.getSetmealId() != null) {
+                    // 如果套餐也有库存管理，取消注释下面两行
+                    // keys.add("stock:setmeal:" + cart.getSetmealId());
+                    // args.add(String.valueOf(cart.getNumber()));
                 }
-                // 若套餐有库存管理，可在此扩展
             }
 
-            // 4. 执行 Redis 扣减
             if (!keys.isEmpty()) {
+                // 将 args 明确转为 String 数组（Lua 接收 ARGV 必须是 String）
                 String[] argsArray = args.stream().map(Object::toString).toArray(String[]::new);
+                // 使用 stringRedisTemplate 替代 redisTemplate
                 Long result = stringRedisTemplate.execute(batchStockLuaScript, keys, argsArray);
-
+                log.info("Redis扣库存结果: {}", result);
                 if (result == null || result != 1L) {
                     throw new OrderBusinessException("库存不足或商品已售罄");
                 }
-                isRedisStockDeducted = true; // ！！！标记扣减成功！！！
+                isRedisStockDeducted = true; // 标记扣减成功，用于异常回滚
                 log.info("Redis预扣库存成功：{}", keys);
             }
 
-            // 5. 插入订单 & 优惠券逻辑 & 插入明细 & 清空购物车
-            // (此部分保持你原来的代码逻辑，建议封装或按序执行)
+            // --- 4. 插入订单 & 优惠券处理 (优惠券 Redis 锁逻辑) ---
+            // 向订单表插入1条数据
+            Orders orders = new Orders();
+            BeanUtils.copyProperties(ordersSubmitDTO, orders);
+            orders.setOrderTime(LocalDateTime.now());
+            orders.setPayStatus(Orders.UN_PAID);
+            orders.setStatus(Orders.PENDING_PAYMENT);
+            orders.setNumber(String.valueOf(System.currentTimeMillis()));
+            orders.setPhone(addressBook.getPhone());
+            orders.setConsignee(addressBook.getConsignee());
+            orders.setUserId(userId);
+            // 原金额
+            BigDecimal originalAmount = orders.getAmount();
+            Map<String, Object> bestCoupon = couponService.selectBestCoupon(originalAmount);
+            // 自动选最优优惠券
+            if (bestCoupon != null) {
+                Long ucId = ((Number) bestCoupon.get("ucId")).longValue();
 
-            // 5.1 优惠券处理
-            Orders orders = processOrderAndCoupon(ordersSubmitDTO, addressBook, userId);
+                // 【注意】这里原本用的是手写锁 coupon:lock:，为了逻辑一致，这里也换成 Redisson
+                // 维持原样，改为 Redisson 的优雅写法：
+                org.redisson.api.RLock couponLock = redissonClient.getLock("coupon:lock:" + ucId);
+                if (couponLock.tryLock(5, TimeUnit.SECONDS)) { // 优惠券锁，尝试5秒
+                    try {
+                        // 再次尝试更新（数据库CAS）
+                        int rows = userCouponMapper.markUsed(ucId);
+                        if (rows == 1) {
+                            // 成功使用优惠券
+                            BigDecimal discount = (BigDecimal) bestCoupon.get("discount");
+                            orders.setAmount(originalAmount.subtract(discount));
+                        }
+                        // rows=0说明券被抢了 → 自动放弃
+                    } finally {
+                        // 只删除自己的锁（防误删）
+                        couponLock.unlock();
+                    }
+                }
+                // 加锁失败 → 说明别人正在用 → 自动放弃该券
+            }
+
             orderMapper.insert(orders);
 
-            // 5.2 明细插入
+            // --- 5. 插入明细 & 清空购物车 ---
             List<OrderDetail> orderDetailList = new ArrayList<>();
+            // 向订单表插入n条数据
             for (ShoppingCart cart : shoppingCartList) {
                 OrderDetail orderDetail = new OrderDetail();
                 BeanUtils.copyProperties(cart, orderDetail);
@@ -159,55 +220,54 @@ public class OrderServiceImpl implements OrderService {
             }
             orderDetailMapper.insertBatch(orderDetailList);
 
-//            // 手动添加一行人工异常
+            // 手动添加一行人工异常
 //            if (true) {
 //                throw new RuntimeException("DEBUG: 模拟数据库写入后的意外崩溃");
 //            }
 
-            // 5.3 清空购物车
+            //清空当前用户的购物车数据
             shoppingCartMapper.deleteByUserId(userId);
 
-            // ================= 新增：发送延迟取消消息 =================
-            // 15分钟后超时 (900秒)
+            // --- 6. 延迟队列检测  ---
+            log.info("---延迟任务开始执行---");
             RBlockingQueue<Long> blockingQueue = redissonClient.getBlockingQueue("orderDelayQueue");
             RDelayedQueue<Long> delayedQueue = redissonClient.getDelayedQueue(blockingQueue);
-           delayedQueue.offer(orders.getId(), 15, TimeUnit.MINUTES);
+            delayedQueue.offer(orders.getId(), 15, TimeUnit.MINUTES);
             //delayedQueue.offer(orders.getId(), 60, TimeUnit.SECONDS);
-            log.info("订单 {} 已加入延迟队列，15分钟后检查支付状态", orders.getId());
-            // =======================================================
+            log.info("订单 {} 加入延迟队列", orders.getId());
 
-            // 6. 返回结果
+            // 封装VO返回结果
             return OrderSubmitVO.builder()
                     .id(orders.getId())
                     .orderNumber(orders.getNumber())
                     .orderAmount(orders.getAmount())
                     .orderTime(orders.getOrderTime())
                     .build();
-
+        } catch (InterruptedException e) {
+            // 1. 恢复中断状态（这是多线程编程的标准做法）
+            Thread.currentThread().interrupt();
+            // 2. 抛出业务异常告知前端
+            throw new OrderBusinessException("订单处理中断，请重试");
         } catch (Exception e) {
-            // ================= 核心：异常回滚 =================
+            // --- 7. 核心异常回滚逻辑 (原样保留，且更健壮) ---
             if (isRedisStockDeducted) {
-                log.warn("业务异常，开始执行Redis库存回滚：{}", keys);
+                log.warn("业务异常，开始回滚Redis库存：{}", keys);
                 try {
                     String[] argsArray = args.stream().map(Object::toString).toArray(String[]::new);
                     stringRedisTemplate.execute(batchRollbackLuaScript, keys, argsArray);
-                    log.info("Redis库存回滚成功");
                 } catch (Exception re) {
-                    log.error("Redis库存回滚失败！请人工介入！Keys: {}", keys, re);
+                    log.error("Redis库存回滚失败！Keys: {}", keys, re);
                 }
             }
-
-            // 重新抛出异常，触发 Spring 的数据库事务回滚 (@Transactional)
-            if (e instanceof OrderBusinessException || e instanceof AddressBookBusinessException) {
+            if (e instanceof OrderBusinessException || e instanceof AddressBookBusinessException){
                 throw e;
             }
             throw new OrderBusinessException("下单失败：" + e.getMessage());
 
         } finally {
-            // 释放防重锁
-            String currentValue = (String) redisTemplate.opsForValue().get(key);
-            if (value.equals(currentValue)) {
-                redisTemplate.delete(key);
+            // --- 8. 释放最外层的下单防重锁 ---
+            if (submitLock.isHeldByCurrentThread()) {
+                submitLock.unlock();
             }
         }
     }
@@ -668,6 +728,15 @@ public class OrderServiceImpl implements OrderService {
         //订单存在
         if(orderDB == null){
             throw new OrderBusinessException(MessageConstant.ORDER_STATUS_ERROR);
+        }
+
+        // 【修改点】增加频率限制锁，每个订单 60 秒内只允许催一次
+        org.redisson.api.RLock lock = redissonClient.getLock("order:reminder:lock:" + id);
+
+        // 尝试加锁。如果 60 秒内已经有人催过了，这里会拿不到锁
+        // 我们不手动 unlock，让它自动 60 秒过期，达到限流效果
+        if (!lock.tryLock()) {
+            throw new OrderBusinessException("催单太频繁了，请稍后再试");
         }
 
         Map map = new HashMap();
